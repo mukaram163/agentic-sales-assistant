@@ -19,7 +19,7 @@ llm = ChatGroq(
     temperature=0
 )
 
-# 3. Build one node: classify the inquiry
+# 3. Classify node
 def classify_inquiry(state: LeadState) -> LeadState:
     prompt = f"""You are triaging incoming business inquiries.
 
@@ -47,15 +47,60 @@ Reasoning: <one sentence why>
     state["reasoning"] = reasoning
     return state
 
-# 4. Build the graph with just this one node for now
+# 4. Handler nodes & Routing function
+# New node: handle qualified leads — this is where CRM lookup/update will go later
+def handle_qualified_lead(state: LeadState) -> LeadState:
+    print(f"[QUALIFIED LEAD] Would now create/update lead {state['lead_id']} in Supabase and move to 'qualifying' status.")
+    return state
+
+# New node: handle support questions — this is where escalation logic will go later
+def handle_support_question(state: LeadState) -> LeadState:
+    print(f"[SUPPORT] Would now escalate lead {state['lead_id']} to a human support queue.")
+    return state
+
+# New node: handle spam — just log and discard
+def handle_spam(state: LeadState) -> LeadState:
+    print(f"[SPAM] Discarding inquiry from lead {state['lead_id']}.")
+    return state
+
+# Routing function: decides which node to go to next based on classification
+def route_by_classification(state: LeadState) -> str:
+    classification = state.get("classification", "unknown")
+    if classification == "qualified_lead":
+        return "handle_qualified_lead"
+    elif classification == "support_question":
+        return "handle_support_question"
+    elif classification == "spam":
+        return "handle_spam"
+    else:
+        return "handle_spam"  # fallback: treat unknown as spam for now, safer default
+
+# 5. Build and compile the graph
 graph = StateGraph(LeadState)
 graph.add_node("classify", classify_inquiry)
+graph.add_node("handle_qualified_lead", handle_qualified_lead)
+graph.add_node("handle_support_question", handle_support_question)
+graph.add_node("handle_spam", handle_spam)
+
 graph.set_entry_point("classify")
-graph.add_edge("classify", END)
+
+graph.add_conditional_edges(
+    "classify",
+    route_by_classification,
+    {
+        "handle_qualified_lead": "handle_qualified_lead",
+        "handle_support_question": "handle_support_question",
+        "handle_spam": "handle_spam",
+    }
+)
+
+graph.add_edge("handle_qualified_lead", END)
+graph.add_edge("handle_support_question", END)
+graph.add_edge("handle_spam", END)
 
 app = graph.compile()
 
-# 5. Test it
+# 6. Test block
 if __name__ == "__main__":
     test_state = {
         "lead_id": "test-123",
@@ -64,4 +109,5 @@ if __name__ == "__main__":
         "reasoning": None
     }
     result = app.invoke(test_state)
+    print("\nFinal State:")
     print(result)

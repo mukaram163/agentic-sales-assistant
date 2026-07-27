@@ -1,32 +1,63 @@
 import os
+from typing import Optional, TypedDict
 from dotenv import load_dotenv
-from typing import TypedDict, Optional
-from langgraph.graph import StateGraph, END
+from langchain_core.tools import tool
 from langchain_groq import ChatGroq
+from langgraph.graph import END, StateGraph
+from langgraph.prebuilt import ToolNode
 from supabase import create_client
 
 load_dotenv()
 
 # Initialize Supabase client
 supabase = create_client(
-    os.environ.get("SUPABASE_URL"),
-    os.environ.get("SUPABASE_KEY")
+    os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY")
 )
 
-# 1. Define the state — this is what flows through every node in the graph
+
+# 1. Define the state — updated with messages field
 class LeadState(TypedDict):
     lead_id: str
     inquiry: str
-    classification: Optional[str]   # "qualified_lead", "support_question", "spam"
-    reasoning: Optional[str]        # why the model classified it that way
+    classification: Optional[str]  # "qualified_lead", "support_question", "spam"
+    reasoning: Optional[str]  # why the model classified it that way
+    messages: list
+
 
 # 2. Set up the LLM
-llm = ChatGroq(
-    model="llama-3.3-70b-versatile",
-    temperature=0
-)
+llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
 
-# 3. Classify node
+
+# 3. Define Tools
+@tool
+def create_qualified_lead(inquiry: str, reasoning: str) -> str:
+    """Creates a new qualified lead record in the CRM database.
+    Use this when an inquiry represents a genuine sales opportunity.
+    """
+    result = (
+        supabase.table("leads")
+        .insert(
+            {
+                "name": None,
+                "contact": None,
+                "source": "agent_tool_call",
+                "inquiry": inquiry,
+                "status": "qualifying",
+                "conversation_history": [],
+                "notes": reasoning,
+            }
+        )
+        .execute()
+    )
+    new_id = result.data[0]["id"]
+    return f"Lead created successfully with ID {new_id}, status set to 'qualifying'."
+
+
+tools = [create_qualified_lead]
+llm_with_tools = llm.bind_tools(tools)
+
+
+# 4. Define Nodes
 def classify_inquiry(state: LeadState) -> LeadState:
     prompt = f"""You are triaging incoming business inquiries.
 
@@ -41,7 +72,7 @@ Reasoning: <one sentence why>
     response = llm.invoke(prompt)
     text = response.content
 
-    # basic parsing of the model's structured response
+    # Basic parsing of the model's structured response
     classification = "unknown"
     reasoning = text
     for line in text.split("\n"):
@@ -54,46 +85,51 @@ Reasoning: <one sentence why>
     state["reasoning"] = reasoning
     return state
 
-# 4. Handler nodes & Routing function
-def handle_qualified_lead(state: LeadState) -> LeadState:
-    result = supabase.table("leads").insert({
-        "name": None,
-        "contact": None,
-        "source": "agent_test",
-        "inquiry": state["inquiry"],
-        "status": "qualifying",
-        "conversation_history": [],
-        "notes": state["reasoning"]
-    }).execute()
 
-    new_id = result.data[0]["id"]
-    state["lead_id"] = new_id
-    print(f"[QUALIFIED LEAD] Created lead {new_id} in Supabase with status 'qualifying'.")
+def agent_decide_action(state: LeadState) -> LeadState:
+    prompt = f"""A lead was classified as: {state['classification']}
+Reasoning: {state['reasoning']}
+Original inquiry: "{state['inquiry']}"
+
+If this is a qualified_lead, call the create_qualified_lead tool with the inquiry and reasoning.
+Otherwise, do not call any tool.
+"""
+    response = llm_with_tools.invoke(prompt)
+    state["messages"] = [response]
     return state
+
 
 def handle_support_question(state: LeadState) -> LeadState:
-    print(f"[SUPPORT] Would now escalate lead {state['lead_id']} to a human support queue.")
+    print(
+        f"[SUPPORT] Would now escalate lead {state.get('lead_id', 'N/A')} to a human support queue."
+    )
     return state
+
 
 def handle_spam(state: LeadState) -> LeadState:
-    print(f"[SPAM] Discarding inquiry from lead {state['lead_id']}.")
+    print(
+        f"[SPAM] Discarding inquiry from lead {state.get('lead_id', 'N/A')}."
+    )
     return state
 
-def route_by_classification(state: LeadState) -> str:
+
+# 5. Routing functions
+def route_after_classify(state: LeadState) -> str:
     classification = state.get("classification", "unknown")
     if classification == "qualified_lead":
-        return "handle_qualified_lead"
+        return "agent_decide_action"
     elif classification == "support_question":
         return "handle_support_question"
-    elif classification == "spam":
-        return "handle_spam"
     else:
-        return "handle_spam"  # fallback: treat unknown as spam for now, safer default
+        return "handle_spam"
 
-# 5. Build and compile the graph
+
+# 6. Build and compile graph
 graph = StateGraph(LeadState)
+
 graph.add_node("classify", classify_inquiry)
-graph.add_node("handle_qualified_lead", handle_qualified_lead)
+graph.add_node("agent_decide_action", agent_decide_action)
+graph.add_node("tools", ToolNode(tools))
 graph.add_node("handle_support_question", handle_support_question)
 graph.add_node("handle_spam", handle_spam)
 
@@ -101,27 +137,29 @@ graph.set_entry_point("classify")
 
 graph.add_conditional_edges(
     "classify",
-    route_by_classification,
+    route_after_classify,
     {
-        "handle_qualified_lead": "handle_qualified_lead",
+        "agent_decide_action": "agent_decide_action",
         "handle_support_question": "handle_support_question",
         "handle_spam": "handle_spam",
-    }
+    },
 )
 
-graph.add_edge("handle_qualified_lead", END)
+graph.add_edge("agent_decide_action", "tools")
+graph.add_edge("tools", END)
 graph.add_edge("handle_support_question", END)
 graph.add_edge("handle_spam", END)
 
 app = graph.compile()
 
-# 6. Test block
+# 7. Test execution block
 if __name__ == "__main__":
     test_state = {
         "lead_id": "",
         "inquiry": "Hi, I'm interested in your services for my growing business, can we schedule a call?",
         "classification": None,
-        "reasoning": None
+        "reasoning": None,
+        "messages": [],
     }
     result = app.invoke(test_state)
     print("\nFinal State:")

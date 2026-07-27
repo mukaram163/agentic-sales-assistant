@@ -3,8 +3,15 @@ from dotenv import load_dotenv
 from typing import TypedDict, Optional
 from langgraph.graph import StateGraph, END
 from langchain_groq import ChatGroq
+from supabase import create_client
 
 load_dotenv()
+
+# Initialize Supabase client
+supabase = create_client(
+    os.environ.get("SUPABASE_URL"),
+    os.environ.get("SUPABASE_KEY")
+)
 
 # 1. Define the state — this is what flows through every node in the graph
 class LeadState(TypedDict):
@@ -48,22 +55,30 @@ Reasoning: <one sentence why>
     return state
 
 # 4. Handler nodes & Routing function
-# New node: handle qualified leads — this is where CRM lookup/update will go later
 def handle_qualified_lead(state: LeadState) -> LeadState:
-    print(f"[QUALIFIED LEAD] Would now create/update lead {state['lead_id']} in Supabase and move to 'qualifying' status.")
+    result = supabase.table("leads").insert({
+        "name": None,
+        "contact": None,
+        "source": "agent_test",
+        "inquiry": state["inquiry"],
+        "status": "qualifying",
+        "conversation_history": [],
+        "notes": state["reasoning"]
+    }).execute()
+
+    new_id = result.data[0]["id"]
+    state["lead_id"] = new_id
+    print(f"[QUALIFIED LEAD] Created lead {new_id} in Supabase with status 'qualifying'.")
     return state
 
-# New node: handle support questions — this is where escalation logic will go later
 def handle_support_question(state: LeadState) -> LeadState:
     print(f"[SUPPORT] Would now escalate lead {state['lead_id']} to a human support queue.")
     return state
 
-# New node: handle spam — just log and discard
 def handle_spam(state: LeadState) -> LeadState:
     print(f"[SPAM] Discarding inquiry from lead {state['lead_id']}.")
     return state
 
-# Routing function: decides which node to go to next based on classification
 def route_by_classification(state: LeadState) -> str:
     classification = state.get("classification", "unknown")
     if classification == "qualified_lead":
@@ -103,7 +118,7 @@ app = graph.compile()
 # 6. Test block
 if __name__ == "__main__":
     test_state = {
-        "lead_id": "test-123",
+        "lead_id": "",
         "inquiry": "Hi, I'm interested in your services for my growing business, can we schedule a call?",
         "classification": None,
         "reasoning": None

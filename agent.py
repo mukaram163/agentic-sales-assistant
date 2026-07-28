@@ -57,7 +57,52 @@ def create_qualified_lead(inquiry: str, reasoning: str) -> str:
         return "Lead creation failed due to a database error. This inquiry should be manually reviewed."
 
 
-tools = [create_qualified_lead]
+@tool
+def check_calendar_availability() -> str:
+    """Checks available meeting slots that are not yet booked.
+    Use this when a qualified lead wants to schedule a call.
+    Returns a list of available time slots.
+    """
+    try:
+        result = (
+            supabase.table("availability")
+            .select("*")
+            .eq("is_booked", False)
+            .order("slot_time")
+            .limit(3)
+            .execute()
+        )
+        if not result.data:
+            return "No available slots found. Escalate to a human to manually schedule."
+        slots = [f"{row['id']}: {row['slot_time']}" for row in result.data]
+        return "Available slots:\n" + "\n".join(slots)
+    except Exception as e:
+        print(f"[ERROR] Failed to check availability: {e}")
+        return "Could not check calendar availability due to a system error."
+
+
+@tool
+def book_meeting(slot_id: str, lead_id: str) -> str:
+    """Books a specific meeting slot for a lead.
+    Use this after check_calendar_availability, once a specific slot_id has been chosen.
+    """
+    try:
+        result = (
+            supabase.table("availability")
+            .update({"is_booked": True, "lead_id": lead_id})
+            .eq("id", slot_id)
+            .eq("is_booked", False)
+            .execute()
+        )
+        if not result.data:
+            return "That slot is no longer available. Please check availability again."
+        return f"Meeting successfully booked for slot {slot_id}."
+    except Exception as e:
+        print(f"[ERROR] Failed to book meeting: {e}")
+        return "Could not book the meeting due to a system error."
+
+
+tools = [create_qualified_lead, check_calendar_availability, book_meeting]
 llm_with_tools = llm.bind_tools(tools)
 
 
@@ -105,8 +150,13 @@ def agent_decide_action(state: LeadState) -> LeadState:
 Reasoning: {state['reasoning']}
 Original inquiry: "{state['inquiry']}"
 
-If this is a qualified_lead, call the create_qualified_lead tool with the inquiry and reasoning.
-Otherwise, do not call any tool.
+You have access to these tools:
+- create_qualified_lead: creates a new lead record in the CRM
+- check_calendar_availability: checks open meeting slots
+- book_meeting: books a specific slot for a lead
+
+If this is a qualified_lead, first call create_qualified_lead to record it.
+If the inquiry mentions wanting a call, meeting, or demo, also call check_calendar_availability after creating the lead.
 """
     response = llm_with_tools.invoke(prompt)
     state["messages"] = [response]

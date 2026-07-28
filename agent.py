@@ -1,9 +1,11 @@
 import os
-from typing import Optional, TypedDict
+from typing import Annotated, Optional, TypedDict
 from dotenv import load_dotenv
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
 from langchain_groq import ChatGroq
 from langgraph.graph import END, StateGraph
+from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from supabase import create_client
 
@@ -15,13 +17,14 @@ supabase = create_client(
 )
 
 
-# 1. Define the state
+# 1. Define the state with message reducer
 class LeadState(TypedDict):
     lead_id: str
     inquiry: str
     classification: Optional[str]  # "qualified_lead", "support_question", "spam"
     reasoning: Optional[str]  # why the model classified it that way
-    messages: list
+    messages: Annotated[list, add_messages]
+    steps: int
 
 
 # 2. Set up the LLM
@@ -123,9 +126,10 @@ Reasoning: <one sentence why>
         text = response.content
     except Exception as e:
         print(f"[ERROR] LLM call failed during classification: {e}")
-        state["classification"] = "unknown"
-        state["reasoning"] = "Classification failed due to an LLM API error."
-        return state
+        return {
+            "classification": "unknown",
+            "reasoning": "Classification failed due to an LLM API error.",
+        }
 
     classification = "unknown"
     reasoning = text
@@ -140,27 +144,36 @@ Reasoning: <one sentence why>
             f"[WARNING] Unexpected classification value: '{classification}'. Defaulting to safe fallback."
         )
 
-    state["classification"] = classification
-    state["reasoning"] = reasoning
-    return state
+    return {
+        "classification": classification,
+        "reasoning": reasoning,
+    }
 
 
-def agent_decide_action(state: LeadState) -> LeadState:
-    prompt = f"""A lead was classified as: {state['classification']}
-Reasoning: {state['reasoning']}
-Original inquiry: "{state['inquiry']}"
+SYSTEM_PROMPT = """You are an AI sales assistant. You have access to these tools:
+- create_qualified_lead: creates a new lead record in the CRM. Call this first for any qualified lead.
+- check_calendar_availability: checks open meeting slots. Call this if the lead wants to schedule a call.
+- book_meeting: books a specific slot_id for a lead_id. Call this once you have both a slot_id (from check_calendar_availability) and a lead_id (from create_qualified_lead), if the inquiry asked for a call or meeting.
 
-You have access to these tools:
-- create_qualified_lead: creates a new lead record in the CRM
-- check_calendar_availability: checks open meeting slots
-- book_meeting: books a specific slot for a lead
-
-If this is a qualified_lead, first call create_qualified_lead to record it.
-If the inquiry mentions wanting a call, meeting, or demo, also call check_calendar_availability after creating the lead.
+Work through these steps one at a time based on what the inquiry needs. Once you have taken all necessary actions, respond with a final plain-text summary and do not call any more tools.
 """
-    response = llm_with_tools.invoke(prompt)
-    state["messages"] = [response]
-    return state
+
+
+def agent_decide_action(state: LeadState) -> dict:
+    if state["steps"] == 0:
+        conversation = [
+            SystemMessage(content=SYSTEM_PROMPT),
+            HumanMessage(
+                content=f"Classification: {state['classification']}\nReasoning: {state['reasoning']}\nInquiry: \"{state['inquiry']}\""
+            ),
+        ]
+        response = llm_with_tools.invoke(conversation)
+        new_messages = conversation + [response]
+    else:
+        response = llm_with_tools.invoke(state["messages"])
+        new_messages = [response]
+
+    return {"messages": new_messages, "steps": state["steps"] + 1}
 
 
 def handle_support_question(state: LeadState) -> LeadState:
@@ -209,8 +222,28 @@ graph.add_conditional_edges(
     },
 )
 
-graph.add_edge("agent_decide_action", "tools")
-graph.add_edge("tools", END)
+MAX_STEPS = 5
+
+
+def should_continue(state: LeadState) -> str:
+    last_message = state["messages"][-1]
+    if state["steps"] >= MAX_STEPS:
+        print(
+            f"[WARNING] Hit max steps ({MAX_STEPS}), stopping loop to prevent runaway execution."
+        )
+        return "end"
+    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+        return "tools"
+    return "end"
+
+
+graph.add_conditional_edges(
+    "agent_decide_action",
+    should_continue,
+    {"tools": "tools", "end": END},
+)
+
+graph.add_edge("tools", "agent_decide_action")
 graph.add_edge("handle_support_question", END)
 graph.add_edge("handle_spam", END)
 
@@ -220,11 +253,13 @@ app = graph.compile()
 if __name__ == "__main__":
     test_state = {
         "lead_id": "",
-        "inquiry": "Hi, I'm interested in your services for my growing business, can we schedule a call?",
+        "inquiry": "Hi, I'm interested in your services for my growing business, can we schedule a call this week?",
         "classification": None,
         "reasoning": None,
         "messages": [],
+        "steps": 0,
     }
     result = app.invoke(test_state)
     print("\nFinal State:")
-    print(result)
+    for m in result["messages"]:
+        print(f"  {type(m).__name__}: {getattr(m, 'content', None)}")

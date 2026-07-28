@@ -15,7 +15,7 @@ supabase = create_client(
 )
 
 
-# 1. Define the state — updated with messages field
+# 1. Define the state
 class LeadState(TypedDict):
     lead_id: str
     inquiry: str
@@ -34,23 +34,27 @@ def create_qualified_lead(inquiry: str, reasoning: str) -> str:
     """Creates a new qualified lead record in the CRM database.
     Use this when an inquiry represents a genuine sales opportunity.
     """
-    result = (
-        supabase.table("leads")
-        .insert(
-            {
-                "name": None,
-                "contact": None,
-                "source": "agent_tool_call",
-                "inquiry": inquiry,
-                "status": "qualifying",
-                "conversation_history": [],
-                "notes": reasoning,
-            }
+    try:
+        result = (
+            supabase.table("leads")
+            .insert(
+                {
+                    "name": None,
+                    "contact": None,
+                    "source": "agent_tool_call",
+                    "inquiry": inquiry,
+                    "status": "qualifying",
+                    "conversation_history": [],
+                    "notes": reasoning,
+                }
+            )
+            .execute()
         )
-        .execute()
-    )
-    new_id = result.data[0]["id"]
-    return f"Lead created successfully with ID {new_id}, status set to 'qualifying'."
+        new_id = result.data[0]["id"]
+        return f"Lead created successfully with ID {new_id}, status set to 'qualifying'."
+    except Exception as e:
+        print(f"[ERROR] Failed to create lead in Supabase: {e}")
+        return "Lead creation failed due to a database error. This inquiry should be manually reviewed."
 
 
 tools = [create_qualified_lead]
@@ -69,10 +73,15 @@ Respond in this exact format:
 Classification: <category>
 Reasoning: <one sentence why>
 """
-    response = llm.invoke(prompt)
-    text = response.content
+    try:
+        response = llm.invoke(prompt)
+        text = response.content
+    except Exception as e:
+        print(f"[ERROR] LLM call failed during classification: {e}")
+        state["classification"] = "unknown"
+        state["reasoning"] = "Classification failed due to an LLM API error."
+        return state
 
-    # Basic parsing of the model's structured response
     classification = "unknown"
     reasoning = text
     for line in text.split("\n"):
@@ -80,6 +89,11 @@ Reasoning: <one sentence why>
             classification = line.split(":", 1)[1].strip()
         if line.startswith("Reasoning:"):
             reasoning = line.split(":", 1)[1].strip()
+
+    if classification not in ("qualified_lead", "support_question", "spam"):
+        print(
+            f"[WARNING] Unexpected classification value: '{classification}'. Defaulting to safe fallback."
+        )
 
     state["classification"] = classification
     state["reasoning"] = reasoning

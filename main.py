@@ -1,6 +1,7 @@
-from agent import app as agent_app
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from langchain_core.messages import AIMessage, ToolMessage
+from agent import app as agent_app
 
 api = FastAPI()
 
@@ -17,6 +18,7 @@ async def handle_inquiry(payload: InquiryPayload):
         "classification": None,
         "reasoning": None,
         "messages": [],
+        "steps": 0,
     }
 
     try:
@@ -28,15 +30,24 @@ async def handle_inquiry(payload: InquiryPayload):
             detail="Agent processing failed. Please try again or contact support.",
         )
 
-    # Extract the last message content if it exists, for a clean API response
-    last_message = (
-        result["messages"][-1].content if result.get("messages") else None
-    )
+    # Build a clean trail of actions taken, skipping system/human messages
+    actions_taken = []
+    for m in result.get("messages", []):
+        if isinstance(m, ToolMessage):
+            actions_taken.append({"tool": m.name, "result": m.content})
+
+    # Extract the last non-empty AI summary message
+    final_summary = None
+    for m in reversed(result.get("messages", [])):
+        if isinstance(m, AIMessage) and m.content:
+            final_summary = m.content
+            break
 
     return {
         "classification": result.get("classification"),
         "reasoning": result.get("reasoning"),
-        "tool_result": last_message,
+        "actions_taken": actions_taken,
+        "final_summary": final_summary,
     }
 
 

@@ -9,15 +9,21 @@ def create_qualified_lead(inquiry: str, reasoning: str) -> str:
     Use this when an inquiry represents a genuine sales opportunity.
     """
     try:
-        result = (supabase.table("leads").insert({
-            "name": None,
-            "contact": None,
-            "source": "agent_tool_call",
-            "inquiry": inquiry,
-            "status": "qualifying",
-            "conversation_history": [],
-            "notes": reasoning,
-        }).execute())
+        result = (
+            supabase.table("leads")
+            .insert(
+                {
+                    "name": None,
+                    "contact": None,
+                    "source": "agent_tool_call",
+                    "inquiry": inquiry,
+                    "status": "qualifying",
+                    "conversation_history": [],
+                    "notes": reasoning,
+                }
+            )
+            .execute()
+        )
         new_id = result.data[0]["id"]
         return f"Lead created successfully with ID {new_id}, status set to 'qualifying'."
     except Exception as e:

@@ -22,7 +22,7 @@ def agent_decide_action(state: LeadState) -> dict:
         conversation = [
             SystemMessage(content=SYSTEM_PROMPT),
             HumanMessage(
-                content=f"Classification: {state['classification']}\nReasoning: {state['reasoning']}\nInquiry: \"{state['inquiry']}\""
+                content=f'Classification: {state["classification"]}\nReasoning: {state["reasoning"]}\nInquiry: "{state["inquiry"]}"'
             ),
         ]
         response = llm_with_tools.invoke(conversation)

@@ -7,7 +7,7 @@ def classify_inquiry(state: LeadState) -> LeadState:
 
 Classify this inquiry into exactly one category: qualified_lead, support_question, or spam.
 
-Inquiry: "{state['inquiry']}"
+Inquiry: "{state["inquiry"]}"
 
 Respond in this exact format:
 Classification: <category>
@@ -31,7 +31,9 @@ Reasoning: <one sentence why>
             reasoning = line.split(":", 1)[1].strip()
 
     if classification not in ("qualified_lead", "support_question", "spam"):
-        print(f"[WARNING] Unexpected classification value: '{classification}'. Defaulting to safe fallback.")
+        print(
+            f"[WARNING] Unexpected classification value: '{classification}'. Defaulting to safe fallback."
+        )
 
     state["classification"] = classification
     state["reasoning"] = reasoning

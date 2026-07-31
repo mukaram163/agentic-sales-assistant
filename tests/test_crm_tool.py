@@ -1,4 +1,5 @@
 from unittest.mock import MagicMock, patch
+
 from app.tools.crm import create_qualified_lead
 
 
@@ -8,7 +9,9 @@ def test_create_qualified_lead_success():
 
     with patch("app.tools.crm.supabase") as mock_supabase:
         mock_supabase.table.return_value.insert.return_value.execute.return_value = mock_result
-        result = create_qualified_lead.invoke({"inquiry": "test inquiry", "reasoning": "test reason"})
+        result = create_qualified_lead.invoke(
+            {"inquiry": "test inquiry", "reasoning": "test reason"}
+        )
 
     assert "abc-123" in result
     assert "qualifying" in result

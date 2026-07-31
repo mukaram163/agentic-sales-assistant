@@ -30,3 +30,4 @@ jobs:
         env:
           SUPABASE_URL: "https://placeholder.supabase.co"
           SUPABASE_KEY: "placeholder-key"
+          GROQ_API_KEY: "placeholder-key"

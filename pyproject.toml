@@ -1,0 +1,28 @@
+[project]
+name = "agentic-sales-assistant"
+version = "0.1.0"
+description = "Agentic sales assistant that classifies inquiries, creates qualified leads, and books meetings"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "langchain-groq",
+    "langgraph",
+    "supabase",
+    "python-dotenv",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-mock",
+    "ruff",
+    "mypy",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

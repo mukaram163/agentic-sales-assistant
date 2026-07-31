@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from langchain_core.messages import AIMessage, ToolMessage
-from agent import app as agent_app
+from app.graph import app as agent_app
 
 api = FastAPI()
 
